@@ -1,0 +1,13 @@
+{
+  "name": "markedit-nvim",
+  "version": "0.1.0",
+  "description": "MarkEdit extension that follows a Neovim instance running markedit.nvim",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
