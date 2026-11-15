@@ -24,13 +24,20 @@ example 80 lines with headings, a list and `$$\sum_{i=1}^{n} i = \frac{n(n+1)}{2
 In Neovim run `:MarkEditOpen`, then `:MarkEditStatus`.
 
 - Expected: `connected viewers: 1` with the path of your file.
-- Then `:MarkEditLog`. There should be a `client ... connected` line and a
-  `{"type":"ready", ...}` line with an `origin=` value. **Note that origin.**
+- Then `:MarkEditLog`. Expect three kinds of lines, in this order:
+  1. `{"type":"loaded", ...}`: the script ran inside MarkEdit. If it is missing,
+     MarkEdit did not load the file: check it is in the `scripts` folder and
+     restart MarkEdit.
+  2. `client ... connected`: the script reached the server.
+  3. `{"type":"ready", ...}` with an `origin=` value. With MarkEdit 1.37.1 it is
+     `http://localhost`, which markedit.nvim allows by default.
+  An `{"type":"error", ...}` line says what failed.
 - If `connected viewers: 0`: open MarkEdit's web inspector (right-click the
   editor → *Inspect Element*), look at the Console and the Network tab for a
   failed `events` request. A CSP or network restriction would show up there.
-- If the log says `forbidden origin`: the webview reports an `http(s)` origin.
-  Add the value printed in the log to `allowed_origins` in `setup()`.
+- If the log says `rejected request from origin ...`: the webview reports an
+  `http(s)` origin that is not allowed. Add the value printed in the log to
+  `allowed_origins` in `setup()` (it replaces the default list).
 
 ### 2. The editor is locked
 

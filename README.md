@@ -91,9 +91,13 @@ file, so double-check the JSON.
 
 ## Troubleshooting
 
-- Nothing happens: in Neovim run `:MarkEditStatus`. `connected viewers: 0` means
-  the extension is not loaded (restart MarkEdit after installing) or cannot
-  reach the port.
+- Nothing happens: in Neovim run `:MarkEditOpen`, then `:MarkEditLog`.
+  - A `{"type":"loaded", ...}` line means the script ran. No such line means
+    MarkEdit did not load it: check the file is in the `scripts` folder and
+    restart MarkEdit.
+  - `loaded` but no `client ... connected` line means the script could not reach
+    the server. Look for an `error` line, or open the web inspector (below).
+  - `:MarkEditStatus` showing `connected viewers: 0` is the same situation.
 - The web inspector helps: right-click the editor → *Inspect Element* (or
   ⌥⌘I). In the console, `markeditNvim.status()` prints the state of the
   extension, including the last error.
@@ -102,6 +106,11 @@ file, so double-check the JSON.
   uncheck *Neovim: keep read-only* in the Extensions menu.
 
 ## How it works
+
+MarkEdit runs each script inside a function that receives its own `MarkEdit` and
+`require` as local variables; the global `MarkEdit` throws for most of the API.
+The extension therefore uses the local one (the first version used the global
+and silently did nothing).
 
 The extension opens an event stream (`EventSource`) to the plugin for the file of
 each window and reacts to the events described in
