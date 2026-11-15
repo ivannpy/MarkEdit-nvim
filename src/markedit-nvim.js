@@ -422,22 +422,27 @@
       };
     }
 
-    return { start: start, stop: stop, status: status, _state: state };
+    return { start: start, stop: stop, status: status, report: report, fail: fail, _state: state };
   }
 
   const api = { createBridge: createBridge, diffRange: diffRange, DEFAULTS: DEFAULTS, PROTOCOL: PROTOCOL };
 
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = api;
+  // MarkEdit runs every script inside a function that receives its own
+  // `MarkEdit` (and `require`) as local variables. The global `MarkEdit` throws
+  // "This API requires a script-local MarkEdit instance" for most of the API, so
+  // the local one must be used. Outside MarkEdit (tests) there is no such
+  // variable and the module is exported instead.
+  const localMarkEdit = typeof MarkEdit !== 'undefined' ? MarkEdit : undefined;
+
+  if (localMarkEdit === undefined) {
+    if (typeof module !== 'undefined' && module.exports) {
+      module.exports = api;
+    }
     return;
   }
 
-  // Running inside MarkEdit.
-  if (typeof root.MarkEdit === 'undefined') {
-    return;
-  }
   const bridge = createBridge({
-    MarkEdit: root.MarkEdit,
+    MarkEdit: localMarkEdit,
     EventSource: root.EventSource,
     fetch: root.fetch ? root.fetch.bind(root) : undefined,
     setTimeout: root.setTimeout.bind(root),
@@ -445,6 +450,15 @@
   });
   // Handy for debugging from the web inspector: markeditNvim.status()
   root.markeditNvim = bridge;
+
+  // Tells Neovim the script ran at all (shows up in :MarkEditLog).
+  bridge.report('loaded', {
+    hasEventSource: typeof root.EventSource === 'function',
+    hasFetch: typeof root.fetch === 'function',
+    hasModule: typeof module !== 'undefined',
+    hasRequire: typeof require === 'function',
+  });
+
   let started = false;
   const begin = function () {
     if (started) {
@@ -452,12 +466,19 @@
     }
     started = true;
     bridge.start().catch(function (error) {
+      bridge.fail('start', error);
       console.error('[MarkEdit-nvim]', error);
     });
   };
-  root.MarkEdit.onEditorReady(begin);
+  localMarkEdit.onEditorReady(begin);
   // The editor may already be up when the script runs.
-  if (root.MarkEdit.editorView) {
+  let ready = false;
+  try {
+    ready = Boolean(localMarkEdit.editorView);
+  } catch (error) {
+    ready = false;
+  }
+  if (ready) {
     begin();
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this);
