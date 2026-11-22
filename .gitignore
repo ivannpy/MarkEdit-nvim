@@ -1,2 +1,4 @@
 node_modules/
 .DS_Store
+# local development notes, not versioned
+ROADMAP.md
