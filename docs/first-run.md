@@ -64,16 +64,17 @@ Switch MarkEdit to **side-by-side**, then to **preview (overlay)** with
 
 Change a line in Neovim and leave insert mode (autosave writes the file).
 
-- Expected: MarkEdit shows the new text within about a second.
-- This tells us **which mechanism did it**. Set `"debug": true` in the extension
-  settings (MarkEdit's `settings.json`, see the README), repeat the edit and run
-  `:MarkEditLog` in Neovim:
-  - a line `applied text from disk` means MarkEdit did **not** reload by itself
-    and the extension did it;
-  - no such line means MarkEdit reloaded the file natively.
-- Then check the window title. If it shows *Edited* (or asks to save when you
-  close the window) after the extension applied the text, the document got
-  marked dirty. Tell me, this is the main risk of that mechanism.
+- Expected: MarkEdit shows the new text within about a second or two, and the
+  window title does **not** show *Edited*.
+- MarkEdit reloads a file saved by another program by itself. The extension only
+  steps in if that has not happened after `reconcileDelayMs` (default 2000 ms),
+  and that change would mark the document as edited.
+- To see how long MarkEdit takes, set `"debug": true` in the extension settings,
+  repeat the edit and read `:MarkEditLog`:
+  - `in sync, MarkEdit reloaded by itself` with `afterMs` is the reload time;
+  - `applied text from disk` means the fallback had to do it.
+- If MarkEdit needs longer than `reconcileDelayMs`, raise it, or set
+  `"reconcile": false` to never touch the text.
 
 ### 5. Unlocking
 
@@ -96,4 +97,4 @@ failed, and the `:MarkEditLog` content. The unknowns that matter most are:
 1. Can the webview open the event stream, and which origin does it report?
 2. Does MarkEdit reload by itself, or did the extension have to apply the text?
 3. Does the preview follow in overlay mode?
-4. Is the document marked as edited after a refresh?
+4. Is the document marked as edited after a refresh? (with the default fallback delay it should not be)

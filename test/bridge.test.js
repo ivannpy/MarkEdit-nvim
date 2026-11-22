@@ -18,7 +18,7 @@ async function setup(options) {
     clearTimeout: timers.clearTimeout,
   });
   const started = await bridge.start();
-  return { bridge, editor, timers, fetch, started, es: FakeEventSource.last() };
+  return { bridge, editor, timers, fetch, started, MarkEdit, es: FakeEventSource.last() };
 }
 
 const hello = { protocol: PROTOCOL, server: 'markedit.nvim', version: '0.1.0' };
@@ -69,10 +69,10 @@ test('hello alone does not lock the document', async () => {
   assert.equal(fetch.calls[0].body.lines, 3);
 });
 
-test('open locks the document read-only and not editable', async () => {
+test('follow locks the document read-only and not editable', async () => {
   const { es, editor, bridge } = await setup();
   es.emit('hello', hello);
-  es.emit('open', { path: '/tmp/notes/doc.md' });
+  es.emit('follow', { path: '/tmp/notes/doc.md' });
   const [lock] = locks(editor);
   assert.deepEqual(lock.effects.reconfigure, [{ readOnly: true }, { editable: false }]);
   assert.equal(bridge.status().locked, true);
@@ -81,13 +81,13 @@ test('open locks the document read-only and not editable', async () => {
 test('lock = false never locks', async () => {
   const { es, editor } = await setup({ userSettings: { 'extension.markeditNvim': { lock: false } } });
   es.emit('hello', hello);
-  es.emit('open', {});
+  es.emit('follow', {});
   assert.equal(locks(editor).length, 0);
 });
 
 test('close unlocks the document', async () => {
   const { es, editor, bridge } = await setup();
-  es.emit('open', {});
+  es.emit('follow', {});
   es.emit('close', {});
   assert.equal(locks(editor).length, 2);
   assert.deepEqual(locks(editor)[1].effects.reconfigure, []);
@@ -96,14 +96,14 @@ test('close unlocks the document', async () => {
 
 test('closeOnDetach closes the window', async () => {
   const { es, editor } = await setup({ userSettings: { 'extension.markeditNvim': { closeOnDetach: true } } });
-  es.emit('open', {});
+  es.emit('follow', {});
   es.emit('close', {});
   assert.equal(editor.closed, 1);
 });
 
 test('bye unlocks the document', async () => {
   const { es, bridge } = await setup();
-  es.emit('open', {});
+  es.emit('follow', {});
   es.emit('bye', {});
   assert.equal(bridge.status().locked, false);
 });
@@ -133,10 +133,10 @@ test('the scroll placement can be configured', async () => {
 
 test('saved applies the text from disk when MarkEdit did not reload it', async () => {
   const { es, editor, timers } = await setup({ text: 'old text', disk: 'new text' });
-  es.emit('open', {});
+  es.emit('follow', {});
   es.emit('saved', {});
   assert.equal(editor.doc, 'old text', 'nothing happens before the delay');
-  timers.advance(300);
+  timers.advance(2100);
   await flush();
   assert.equal(editor.doc, 'new text');
   const change = editor.dispatched.pop().changes;
@@ -145,31 +145,31 @@ test('saved applies the text from disk when MarkEdit did not reload it', async (
 
 test('saved does nothing when the document already matches the disk', async () => {
   const { es, editor, timers } = await setup({ text: 'same', disk: 'same' });
-  es.emit('open', {});
+  es.emit('follow', {});
   const before = editor.dispatched.length;
   es.emit('saved', {});
-  timers.advance(300);
+  timers.advance(2100);
   await flush();
   assert.equal(editor.dispatched.length, before);
 });
 
 test('saved ignores differences in line breaks only', async () => {
   const { es, editor, timers } = await setup({ text: 'a\nb', disk: 'a\r\nb' });
-  es.emit('open', {});
+  es.emit('follow', {});
   const before = editor.dispatched.length;
   es.emit('saved', {});
-  timers.advance(300);
+  timers.advance(2100);
   await flush();
   assert.equal(editor.dispatched.length, before);
 });
 
 test('several saves in a row reconcile once', async () => {
   const { es, editor, timers } = await setup({ text: 'a', disk: 'b' });
-  es.emit('open', {});
+  es.emit('follow', {});
   es.emit('saved', {});
   es.emit('saved', {});
   es.emit('saved', {});
-  timers.advance(300);
+  timers.advance(2100);
   await flush();
   assert.equal(editor.dispatched.filter((d) => d.changes).length, 1);
 });
@@ -180,9 +180,9 @@ test('reconcile = false leaves the text alone', async () => {
     disk: 'new',
     userSettings: { 'extension.markeditNvim': { reconcile: false } },
   });
-  es.emit('open', {});
+  es.emit('follow', {});
   es.emit('saved', {});
-  timers.advance(300);
+  timers.advance(2100);
   await flush();
   assert.equal(editor.doc, 'old');
 });
@@ -190,7 +190,7 @@ test('reconcile = false leaves the text alone', async () => {
 test('losing the connection unlocks after the grace period', async () => {
   const { es, bridge, timers } = await setup();
   es.emit('hello', hello);
-  es.emit('open', {});
+  es.emit('follow', {});
   es.fail();
   assert.equal(bridge.status().locked, true, 'still locked right after the error');
   timers.advance(2900);
@@ -202,13 +202,13 @@ test('losing the connection unlocks after the grace period', async () => {
 test('reconnecting in time keeps the lock', async () => {
   const { es, bridge, timers } = await setup();
   es.emit('hello', hello);
-  es.emit('open', {});
+  es.emit('follow', {});
   es.fail();
   timers.advance(1000);
   const next = FakeEventSource.last();
   assert.notEqual(next, es, 'a new connection is opened');
   next.emit('hello', hello);
-  next.emit('open', {});
+  next.emit('follow', {});
   timers.advance(10000);
   assert.equal(bridge.status().locked, true);
 });
@@ -252,7 +252,7 @@ test('invalid event data is reported, not thrown', async () => {
 
 test('the menu item pins the document unlocked and back', async () => {
   const { es, editor, bridge } = await setup();
-  es.emit('open', {});
+  es.emit('follow', {});
   assert.equal(bridge.status().locked, true);
 
   const item = editor.menuItems[0];
@@ -261,7 +261,7 @@ test('the menu item pins the document unlocked and back', async () => {
   assert.equal(bridge.status().locked, false);
   assert.deepEqual(item.state(), { isSelected: false });
 
-  es.emit('open', {});
+  es.emit('follow', {});
   assert.equal(bridge.status().locked, false, 'stays unlocked while pinned');
 
   item.action();
@@ -270,7 +270,7 @@ test('the menu item pins the document unlocked and back', async () => {
 
 test('stop closes the connection and unlocks', async () => {
   const { es, bridge, timers } = await setup();
-  es.emit('open', {});
+  es.emit('follow', {});
   bridge.stop();
   assert.equal(es.readyState, 2);
   assert.equal(bridge.status().locked, false);
@@ -280,13 +280,116 @@ test('stop closes the connection and unlocks', async () => {
 
 test('debug mode reports what it does', async () => {
   const { es, fetch } = await setup({ userSettings: { 'extension.markeditNvim': { debug: true } } });
-  es.emit('open', {});
+  es.emit('follow', {});
   assert.ok(fetch.calls.some((c) => c.body.type === 'debug' && c.body.message === 'locked'));
 });
 
 test('without debug mode nothing but ready and errors is reported', async () => {
   const { es, fetch } = await setup();
   es.emit('hello', hello);
-  es.emit('open', {});
+  es.emit('follow', {});
   assert.deepEqual([...new Set(fetch.calls.map((c) => c.body.type))], ['ready']);
+});
+
+test('saved leaves the text alone when MarkEdit reloads by itself in time', async () => {
+  const { es, editor, timers } = await setup({ text: 'old', disk: 'new' });
+  es.emit('follow', {});
+  es.emit('saved', {});
+  timers.advance(800);
+  await flush();
+  editor.doc = editor.disk; // MarkEdit's own reload happens before the delay
+  timers.advance(1500);
+  await flush();
+  assert.equal(editor.dispatched.filter((d) => d.changes).length, 0, 'no change is applied, so the document stays unedited');
+});
+
+test('the fallback waits for the configured delay', async () => {
+  const { es, editor, timers } = await setup({
+    text: 'old',
+    disk: 'new',
+    userSettings: { 'extension.markeditNvim': { reconcileDelayMs: 5000 } },
+  });
+  es.emit('follow', {});
+  es.emit('saved', {});
+  timers.advance(4900);
+  await flush();
+  assert.equal(editor.doc, 'old');
+  timers.advance(200);
+  await flush();
+  assert.equal(editor.doc, 'new');
+});
+
+test('without debug the file is read once per save', async () => {
+  const { es, timers, MarkEdit } = await setup({ text: 'a', disk: 'a' });
+  let reads = 0;
+  const original = MarkEdit.getFileContent;
+  MarkEdit.getFileContent = async () => {
+    reads += 1;
+    return original();
+  };
+  es.emit('follow', {});
+  es.emit('saved', {});
+  timers.advance(5000);
+  await flush();
+  assert.equal(reads, 1);
+});
+
+test('debug probes time MarkEdit\'s own reload and cancel the fallback', async () => {
+  const { es, editor, timers, fetch } = await setup({
+    text: 'old',
+    disk: 'new',
+    userSettings: { 'extension.markeditNvim': { debug: true } },
+  });
+  es.emit('follow', {});
+  es.emit('saved', {});
+  timers.advance(300); // probe at 250 ms
+  await flush();
+  timers.advance(250); // probe at 500 ms
+  await flush();
+  editor.doc = editor.disk; // MarkEdit reloads between 500 and 1000 ms
+  timers.advance(500); // probe at 1000 ms
+  await flush();
+  timers.advance(3000);
+  await flush();
+
+  const messages = fetch.calls.filter((c) => c.body.type === 'debug').map((c) => [c.body.message, c.body.afterMs]);
+  assert.deepEqual(
+    messages.filter(([m]) => m !== 'locked'),
+    [
+      ['not in sync yet', 250],
+      ['not in sync yet', 500],
+      ['in sync, MarkEdit reloaded by itself', 1000],
+    ]
+  );
+  assert.equal(editor.dispatched.filter((d) => d.changes).length, 0, 'the fallback never ran');
+});
+
+test('debug probes also run when reconcile is off, without touching the text', async () => {
+  const { es, editor, timers, fetch } = await setup({
+    text: 'old',
+    disk: 'new',
+    userSettings: { 'extension.markeditNvim': { debug: true, reconcile: false } },
+  });
+  es.emit('follow', {});
+  es.emit('saved', {});
+  timers.advance(5000);
+  await flush();
+  assert.ok(fetch.calls.some((c) => c.body.message === 'not in sync yet'));
+  assert.equal(editor.doc, 'old', 'the text is never applied');
+});
+
+test('events without data (built-in EventSource events) are ignored silently', async () => {
+  const { es, bridge, fetch, editor } = await setup();
+  es.emitRaw('cursor', undefined);
+  es.emitRaw('follow', undefined);
+  assert.equal(bridge.status().lastError, null);
+  assert.equal(fetch.calls.some((c) => c.body.type === 'error'), false);
+  assert.equal(bridge.status().locked, false);
+  assert.equal(editor.dispatched.length, 0, 'nothing is dispatched to the editor');
+});
+
+test('does not listen to the built-in open event', async () => {
+  const { es } = await setup();
+  assert.equal(es.listeners.open, undefined);
+  assert.ok(es.listeners.follow);
 });

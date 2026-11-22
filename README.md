@@ -50,7 +50,7 @@ To remove it: `./scripts/install.sh --uninstall`.
 ## Usage
 
 1. Open a Markdown file in Neovim and run `:MarkEditOpen` (see markedit.nvim).
-2. MarkEdit opens the file in the background. Switch it to the preview mode of
+2. MarkEdit opens the file and comes to the front. Switch it to the preview mode of
    MarkEdit-preview (*Extensions → View Mode*).
 3. Edit in Neovim. MarkEdit follows.
 
@@ -83,8 +83,8 @@ file, so double-check the JSON.
 | `lock` | `true` | Make the document read-only while Neovim follows it. |
 | `unlockAfterMs` | `3000` | Unlock this long after the connection is lost. |
 | `scroll` | `"center"` | Where the cursor line goes: `center`, `start`, `end` or `nearest`. |
-| `reconcile` | `true` | Apply the text from disk if MarkEdit did not reload it. |
-| `reconcileDelayMs` | `250` | Wait this long after a save before checking. |
+| `reconcile` | `true` | Fallback: if MarkEdit has not reloaded the saved file by itself after `reconcileDelayMs`, apply the text from disk. This marks the document as edited. Set `false` to rely only on MarkEdit's own reload. |
+| `reconcileDelayMs` | `2000` | How long to wait for MarkEdit's own reload before the fallback runs. |
 | `closeOnDetach` | `false` | Close the window when Neovim stops following the file. |
 | `debug` | `false` | Report what the extension does to Neovim (`:MarkEditLog`). |
 | `reconnectMinMs`, `reconnectMaxMs` | `1000`, `30000` | Reconnection backoff. |
@@ -114,15 +114,18 @@ and silently did nothing).
 
 The extension opens an event stream (`EventSource`) to the plugin for the file of
 each window and reacts to the events described in
-[docs/protocol.md](docs/protocol.md): `open` locks the editor, `cursor` moves the
+[docs/protocol.md](docs/protocol.md): `follow` locks the editor, `cursor` moves the
 selection and scrolls, `saved` refreshes the text, `close` and `bye` unlock.
 
 Locking uses a CodeMirror compartment with `EditorState.readOnly` and
 `EditorView.editable` set to false, both exposed through `MarkEdit.codemirror`.
 Moving the cursor dispatches a selection with `scrollIntoView`; MarkEdit-preview
-listens to selection changes and scrolls the preview. Refreshing the text
-dispatches the smallest change between the open text and the file, so the scroll
-position and selection survive.
+listens to selection changes and scrolls the preview. MarkEdit reloads a saved file by itself. Only if that has not happened after
+`reconcileDelayMs` does the extension dispatch the smallest change between the open
+text and the file, so the scroll position and selection survive. That change marks
+the document as edited, which is why it is a slow fallback. With `"debug": true`
+the log reports how long MarkEdit took to reload (`in sync, MarkEdit reloaded by
+itself`, `afterMs`).
 
 ## Development
 

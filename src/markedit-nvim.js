@@ -12,6 +12,8 @@
   'use strict';
 
   const SETTINGS_KEY = 'extension.markeditNvim';
+  // Checkpoints, after a save, used only in debug mode to time MarkEdit's own reload.
+  const PROBES_MS = [250, 500, 1000];
   const PROTOCOL = 1;
 
   // Override any of these in MarkEdit's settings.json under
@@ -29,10 +31,12 @@
     unlockAfterMs: 3000,
     // Where the line Neovim is on goes: 'center', 'start', 'end' or 'nearest'.
     scroll: 'center',
-    // When Neovim saves and MarkEdit did not reload the file by itself, apply
-    // the text from disk to the open document.
+    // MarkEdit reloads a saved file by itself. If it has not done so after
+    // `reconcileDelayMs`, apply the text from disk. This is only a fallback:
+    // changing the text marks the document as edited. Set to false to rely on
+    // MarkEdit alone.
     reconcile: true,
-    reconcileDelayMs: 250,
+    reconcileDelayMs: 2000,
     // Close the window when Neovim stops following the file (:MarkEditClose).
     closeOnDetach: false,
     // Report what happens to Neovim (:MarkEditLog) for troubleshooting.
@@ -93,7 +97,7 @@
       compartment: null,
       unlockTimer: null,
       reconnectTimer: null,
-      reconcileTimer: null,
+      reconcileTimers: [],
       backoff: 0,
       stopped: false,
       lastError: null,
@@ -209,38 +213,87 @@
       });
     }
 
-    async function reconcile() {
-      if (!state.settings.reconcile || !state.following) {
-        return;
-      }
+    // Compares the document with the file on disk.
+    async function compare() {
       const disk = await MarkEdit.getFileContent();
       if (typeof disk !== 'string') {
-        return;
+        return null;
       }
       const current = MarkEdit.editorAPI.getText();
-      if (normalizeBreaks(disk) === normalizeBreaks(current)) {
+      return { disk: disk, current: current, same: normalizeBreaks(disk) === normalizeBreaks(current) };
+    }
+
+    function cancelReconcile() {
+      state.reconcileTimers.forEach(clearTimer);
+      state.reconcileTimers = [];
+    }
+
+    // The fallback: MarkEdit did not reload the file, so apply the text.
+    async function applyFromDisk() {
+      if (!state.following) {
         return;
       }
-      const change = diffRange(current, disk);
+      const result = await compare();
+      if (!result) {
+        return;
+      }
+      if (result.same) {
+        debug('in sync, nothing to apply');
+        return;
+      }
+      const change = diffRange(result.current, result.disk);
       MarkEdit.editorView.dispatch({ changes: change });
       debug('applied text from disk', { from: change.from, to: change.to, inserted: change.insert.length });
     }
 
-    function scheduleReconcile() {
-      if (state.reconcileTimer !== null) {
-        clearTimer(state.reconcileTimer);
+    // Debug only: measures how long MarkEdit takes to reload by itself.
+    async function probe(elapsed) {
+      const result = await compare();
+      if (!result) {
+        return;
       }
-      state.reconcileTimer = setTimer(function () {
-        state.reconcileTimer = null;
-        reconcile().catch(function (error) {
-          fail('reconcile', error);
+      if (result.same) {
+        debug('in sync, MarkEdit reloaded by itself', { afterMs: elapsed });
+        cancelReconcile();
+      } else {
+        debug('not in sync yet', { afterMs: elapsed });
+      }
+    }
+
+    function later(ms, task, where) {
+      state.reconcileTimers.push(
+        setTimer(function () {
+          task().catch(function (error) {
+            fail(where, error);
+          });
+        }, ms)
+      );
+    }
+
+    function scheduleReconcile() {
+      cancelReconcile();
+      const s = state.settings;
+      if (s.debug) {
+        PROBES_MS.filter(function (ms) {
+          return ms < s.reconcileDelayMs;
+        }).forEach(function (ms) {
+          later(ms, function () {
+            return probe(ms);
+          }, 'probe');
         });
-      }, state.settings.reconcileDelayMs);
+      }
+      if (s.reconcile) {
+        later(s.reconcileDelayMs, applyFromDisk, 'reconcile');
+      }
     }
 
     // ----- events from Neovim -------------------------------------------------
 
     function parse(event) {
+      // Built-in EventSource events (open, error) carry no data.
+      if (event.data === undefined) {
+        return null;
+      }
       try {
         return JSON.parse(event.data);
       } catch (error) {
@@ -282,7 +335,7 @@
       },
 
       // Neovim started following this file.
-      open: function () {
+      follow: function () {
         state.following = true;
         cancelUnlockTimer();
         lock();
@@ -402,10 +455,7 @@
     function stop() {
       state.stopped = true;
       cancelUnlockTimer();
-      if (state.reconcileTimer !== null) {
-        clearTimer(state.reconcileTimer);
-        state.reconcileTimer = null;
-      }
+      cancelReconcile();
       disconnect();
       unlock();
     }
