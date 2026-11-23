@@ -78,7 +78,9 @@ file, so double-check the JSON.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `host` | `"127.0.0.1"` | Where the plugin listens. Must match the plugin. |
-| `port` | `47821` | Same. |
+| `port` | `47821` | First port to look at. Must match the plugin. |
+| `portCount` | `10` | How many ports to look through. Must match the plugin's `port_count`. `1` means only `port`. |
+| `rescanMs` | `5000` | How often to look for a Neovim that follows this file, while the connected one does not. |
 | `token` | `null` | Shared secret, must match the plugin's `token`. |
 | `lock` | `true` | Make the document read-only while Neovim follows it. |
 | `unlockAfterMs` | `3000` | Unlock this long after the connection is lost. |
@@ -112,8 +114,9 @@ MarkEdit runs each script inside a function that receives its own `MarkEdit` and
 The extension therefore uses the local one (the first version used the global
 and silently did nothing).
 
-The extension opens an event stream (`EventSource`) to the plugin for the file of
-each window and reacts to the events described in
+Each Neovim runs its own server on one port of a small range. The extension asks
+all of them which one follows its file, opens an event stream (`EventSource`) to
+that one for the file of each window, and reacts to the events described in
 [docs/protocol.md](docs/protocol.md): `follow` locks the editor, `cursor` moves the
 selection and scrolls, `saved` refreshes the text, `close` and `bye` unlock.
 
