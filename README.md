@@ -1,7 +1,7 @@
 # MarkEdit-nvim
 
 A [MarkEdit](https://github.com/MarkEdit-app/MarkEdit) extension that follows a
-Neovim instance running [markedit.nvim](../markedit.nvim).
+Neovim instance running [markedit.nvim](https://github.com/ivannpy/MarkEdit.nvim).
 
 You edit in Neovim; MarkEdit shows the rendered result:
 
@@ -15,22 +15,42 @@ You edit in Neovim; MarkEdit shows the rendered result:
   so you never edit the same file in two places. It unlocks by itself when Neovim
   closes, stops following the file or disconnects.
 
-> **Status: experimental (0.1.0).** It is tested against the real plugin with a
-> simulated MarkEdit, and has not been run inside the real MarkEdit yet. Follow
-> [docs/first-run.md](docs/first-run.md) to check each assumption and report what
-> differs.
+> **Status: experimental (0.1.0).** Loading, connecting, the read-only lock,
+> following the cursor and reloading saved text work in the real MarkEdit
+> (1.37.1, with a build shortly before 0.1.0). The rest, such as unlocking and
+> several Neovims at once, is tested only with a simulated MarkEdit
+> ([details](https://github.com/ivannpy/MarkEdit.nvim#what-is-verified)). Follow
+> [docs/first-run.md](docs/first-run.md) to check each assumption and
+> [report what differs](https://github.com/ivannpy/MarkEdit-nvim/issues).
 
 ## Requirements
 
 - MarkEdit 1.37 or newer (written against `markedit-api` 0.39).
-- [markedit.nvim](../markedit.nvim) in Neovim.
-- Recommended: MarkEdit-preview, for the rendered view.
+- [markedit.nvim](https://github.com/ivannpy/MarkEdit.nvim#installation) in Neovim.
+- Recommended:
+  [MarkEdit-preview](https://github.com/MarkEdit-app/MarkEdit-preview), for the rendered view.
 
 ## Installation
 
-The extension is one file with no dependencies: `src/markedit-nvim.js`.
+The extension is one file with no dependencies, `markedit-nvim.js`.
+
+> Following several Neovims at once needs a version newer than the 0.1.0 release.
+> Until the next release, install it from a clone.
+
+### From a release
+
+1. Download
+   [`markedit-nvim.js`](https://github.com/ivannpy/MarkEdit-nvim/releases/latest/download/markedit-nvim.js)
+   from the [latest release](https://github.com/ivannpy/MarkEdit-nvim/releases/latest).
+2. In MarkEdit, choose *Open Documents Folder* from the main menu and put the file
+   in the `scripts` folder (create it if needed).
+3. Quit and reopen MarkEdit.
+
+### From a clone
 
 ```sh
+git clone https://github.com/ivannpy/MarkEdit-nvim
+cd MarkEdit-nvim
 ./scripts/install.sh
 ```
 
@@ -45,7 +65,12 @@ permitted* when run from a terminal. If so, it prints the manual steps: open the
 folder from MarkEdit's main menu (*Open Documents Folder*), put the file in
 `scripts/`, and restart MarkEdit. Giving the terminal *Full Disk Access* also works.
 
-To remove it: `./scripts/install.sh --uninstall`.
+To update, run `git pull` and the script again, then restart MarkEdit.
+
+### Uninstall
+
+Delete `markedit-nvim.js` from the `scripts` folder, or run
+`./scripts/install.sh --uninstall`, and restart MarkEdit.
 
 ## Usage
 
@@ -139,10 +164,11 @@ npm test    # or: node --test "test/**/*.test.js"
 - `test/bridge.test.js`: unit tests with a simulated MarkEdit, EventSource and timers.
 - `test/e2e/`: starts a real headless Neovim with markedit.nvim and runs the
   extension against it. It looks for the plugin at `../markedit.nvim`, or at
-  `$MARKEDIT_NVIM_PLUGIN`, and is skipped if it is not found.
+  `$MARKEDIT_NVIM_PLUGIN`, and is skipped if it is not found. To get it:
+  `git clone https://github.com/ivannpy/MarkEdit.nvim ../markedit.nvim`.
 
 No build step: `src/markedit-nvim.js` is what MarkEdit loads.
 
 ## License
 
-MIT
+[MIT](LICENSE)
