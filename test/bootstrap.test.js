@@ -104,6 +104,14 @@ test('tells Neovim it was loaded', async (t) => {
   assert.equal(loaded.body.hasModule, true);
 });
 
+test('tells every possible Neovim, since it does not know yet which one it is for', async (t) => {
+  const run = loadLikeMarkEdit();
+  t.after(run.restore);
+  const loaded = run.fetch.calls.filter((c) => c.body.type === 'loaded');
+  assert.equal(new Set(loaded.map((c) => new URL(c.url).port)).size, 10);
+  assert.equal(loaded.length, 10);
+});
+
 test('starts only once when both the callback and the check fire', async (t) => {
   const run = loadLikeMarkEdit();
   t.after(run.restore);

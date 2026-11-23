@@ -1,7 +1,7 @@
 # First run with the real MarkEdit
 
-Everything in this repository is tested against a simulated MarkEdit. This list
-checks the assumptions that only the real application can confirm. Each step says
+The automated tests use a simulated MarkEdit. This list checks what only the real
+application can confirm. Each step says
 what you should see, and what it means if you do not.
 
 ## Setup
@@ -11,8 +11,13 @@ what you should see, and what it means if you do not.
 2. Install this extension: `./scripts/install.sh`, or copy `src/markedit-nvim.js`
    to the `scripts` folder by hand (see the README).
 3. Quit and reopen MarkEdit.
-4. Add markedit.nvim to Neovim (see its README), or try it without touching your
-   configuration: `nvim -c "set rtp+=$HOME/Developer/markedit.nvim | runtime plugin/markedit.lua" scratch.md`.
+4. Add [markedit.nvim](https://github.com/ivannpy/MarkEdit.nvim#installation) to Neovim, or try it without touching
+   your configuration:
+
+   ```sh
+   git clone https://github.com/ivannpy/MarkEdit.nvim ~/markedit.nvim
+   nvim -c "set rtp+=$HOME/markedit.nvim | runtime plugin/markedit.lua" scratch.md
+   ```
 
 Use a scratch file with a few screens of text and a formula for the checks, for
 example 80 lines with headings, a list and `$$\sum_{i=1}^{n} i = \frac{n(n+1)}{2}$$`.

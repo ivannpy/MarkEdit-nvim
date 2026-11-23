@@ -8,7 +8,7 @@ const { FakeEventSource, FakeTimers, flush, makeMarkEdit, makeFetch } = require(
 async function setup(options) {
   FakeEventSource.reset();
   const timers = new FakeTimers();
-  const fetch = makeFetch();
+  const fetch = makeFetch(options && options.servers);
   const { MarkEdit, editor } = makeMarkEdit(options);
   const bridge = createBridge({
     MarkEdit,
@@ -205,6 +205,7 @@ test('reconnecting in time keeps the lock', async () => {
   es.emit('follow', {});
   es.fail();
   timers.advance(1000);
+  await flush();
   const next = FakeEventSource.last();
   assert.notEqual(next, es, 'a new connection is opened');
   next.emit('hello', hello);
@@ -222,6 +223,7 @@ test('reconnection backs off up to a maximum', async () => {
     const before = FakeEventSource.instances.length;
     for (let ms = 0; ms <= 40000 && FakeEventSource.instances.length === before; ms += 250) {
       timers.advance(250);
+      await flush();
       if (FakeEventSource.instances.length > before) {
         delays.push(ms + 250);
       }
@@ -386,6 +388,156 @@ test('events without data (built-in EventSource events) are ignored silently', a
   assert.equal(fetch.calls.some((c) => c.body.type === 'error'), false);
   assert.equal(bridge.status().locked, false);
   assert.equal(editor.dispatched.length, 0, 'nothing is dispatched to the editor');
+});
+
+// ----- several Neovim instances ----------------------------------------------
+
+const BASE = DEFAULTS.port;
+const portOf = (es) => Number(new URL(es.url).port);
+
+test('looks through the whole range with the path and the token', async () => {
+  const { fetch } = await setup({ path: '/tmp/ñ.md', userSettings: { 'extension.markeditNvim': { token: 't k' } } });
+  assert.deepEqual(
+    fetch.probes.map((url) => Number(new URL(url).port)),
+    Array.from({ length: DEFAULTS.portCount }, (_, i) => BASE + i)
+  );
+  const query = new URL(fetch.probes[0]).searchParams;
+  assert.equal(query.get('path'), '/tmp/ñ.md');
+  assert.equal(query.get('token'), 't k');
+});
+
+test('connects to the Neovim that follows the file, not the first one', async () => {
+  const { es, bridge, fetch } = await setup({ servers: { [BASE]: false, [BASE + 1]: true } });
+  assert.equal(FakeEventSource.instances.length, 1);
+  assert.equal(portOf(es), BASE + 1);
+  assert.equal(bridge.status().port, BASE + 1);
+  es.emit('hello', hello);
+  assert.deepEqual(fetch.calls.map((c) => Number(new URL(c.url).port)), [BASE + 1], 'reports only to that one');
+});
+
+test('without a match it waits on a running Neovim, skipping other programs', async () => {
+  const { es } = await setup({ servers: { [BASE]: 'other', [BASE + 2]: false } });
+  assert.equal(portOf(es), BASE + 2);
+});
+
+test('a server that never answers does not block the search', async () => {
+  FakeEventSource.reset();
+  const timers = new FakeTimers();
+  const { MarkEdit } = makeMarkEdit();
+  const bridge = createBridge({
+    MarkEdit,
+    EventSource: FakeEventSource,
+    fetch: makeFetch({ [BASE]: 'hang', [BASE + 1]: true }),
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+  });
+  const starting = bridge.start();
+  await flush();
+  assert.equal(FakeEventSource.instances.length, 0);
+  timers.advance(500);
+  await starting;
+  assert.equal(portOf(FakeEventSource.last()), BASE + 1);
+});
+
+test('portCount = 1 uses only the configured port, without searching', async () => {
+  const { es, fetch, timers } = await setup({
+    servers: { [BASE + 1]: true },
+    userSettings: { 'extension.markeditNvim': { portCount: 1 } },
+  });
+  assert.equal(portOf(es), BASE);
+  timers.advance(60000);
+  await flush();
+  assert.equal(fetch.probes.length, 0);
+});
+
+test('switches when another Neovim starts following the file', async () => {
+  const { es, fetch, timers } = await setup({ servers: { [BASE]: false } });
+  es.emit('hello', hello);
+  fetch.servers[BASE + 1] = true;
+  timers.advance(DEFAULTS.rescanMs);
+  await flush();
+  assert.equal(es.readyState, 2, 'the old connection is closed');
+  assert.equal(portOf(FakeEventSource.last()), BASE + 1);
+});
+
+test('keeps looking, on the same connection, while nobody follows the file', async () => {
+  const { es, fetch, timers } = await setup({ servers: { [BASE]: false } });
+  es.emit('hello', hello);
+  for (let i = 0; i < 3; i += 1) {
+    timers.advance(DEFAULTS.rescanMs);
+    await flush();
+  }
+  assert.equal(fetch.probes.length, 4 * DEFAULTS.portCount);
+  assert.equal(FakeEventSource.instances.length, 1);
+});
+
+test('does not search while following', async () => {
+  const { es, fetch, timers } = await setup({ servers: { [BASE]: true } });
+  es.emit('hello', hello);
+  es.emit('follow', {});
+  timers.advance(60000);
+  await flush();
+  assert.equal(fetch.probes.length, DEFAULTS.portCount);
+});
+
+test('a follow that arrives during the search keeps the connection', async () => {
+  const { es, fetch, timers } = await setup({ servers: { [BASE]: false } });
+  fetch.servers[BASE + 1] = true;
+  timers.advance(DEFAULTS.rescanMs);
+  es.emit('follow', {});
+  await flush();
+  assert.equal(FakeEventSource.instances.length, 1);
+  assert.equal(es.readyState, 0);
+});
+
+test('after close it looks for another Neovim with the same file', async () => {
+  const { es, fetch, timers } = await setup({ servers: { [BASE]: true } });
+  es.emit('follow', {});
+  es.emit('close', {});
+  fetch.servers[BASE] = false;
+  fetch.servers[BASE + 3] = true;
+  timers.advance(DEFAULTS.rescanMs);
+  await flush();
+  assert.equal(portOf(FakeEventSource.last()), BASE + 3);
+});
+
+test('a killed Neovim unlocks the document even if another one is running', async () => {
+  const { es, bridge, fetch, timers } = await setup({ servers: { [BASE]: false, [BASE + 1]: true } });
+  es.emit('hello', hello);
+  es.emit('follow', {});
+  delete fetch.servers[BASE + 1];
+  es.fail();
+  timers.advance(1000);
+  await flush();
+  const next = FakeEventSource.last();
+  assert.equal(portOf(next), BASE);
+  next.emit('hello', hello); // this one does not follow the file
+  timers.advance(5000);
+  assert.equal(bridge.status().locked, false);
+});
+
+test('wake looks again at once', async () => {
+  const { es, bridge, fetch, timers } = await setup();
+  es.fail();
+  fetch.servers[BASE + 1] = true;
+  bridge.wake();
+  await flush();
+  assert.equal(portOf(FakeEventSource.last()), BASE + 1);
+  timers.advance(1500);
+  await flush();
+  assert.equal(FakeEventSource.instances.length, 2, 'the pending reconnection was dropped');
+});
+
+test('stopping during the search opens no connection', async () => {
+  const { es, bridge, fetch, timers } = await setup({ servers: { [BASE]: false } });
+  fetch.servers[BASE + 1] = true;
+  timers.advance(DEFAULTS.rescanMs);
+  bridge.stop();
+  await flush();
+  timers.advance(60000);
+  await flush();
+  assert.equal(FakeEventSource.instances.length, 1);
+  assert.equal(es.readyState, 2);
 });
 
 test('does not listen to the built-in open event', async () => {

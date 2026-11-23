@@ -15,6 +15,9 @@
   // Checkpoints, after a save, used only in debug mode to time MarkEdit's own reload.
   const PROBES_MS = [250, 500, 1000];
   const PROTOCOL = 1;
+  const SERVER_NAME = 'markedit.nvim';
+  // How long a server has to say whether it follows the file.
+  const PROBE_TIMEOUT_MS = 500;
 
   // Override any of these in MarkEdit's settings.json under
   // "extension.markeditNvim".
@@ -22,6 +25,11 @@
     // Where the markedit.nvim server listens. Must match its `host` and `port`.
     host: '127.0.0.1',
     port: 47821,
+    // How many ports to look through, starting at `port`. Every Neovim takes the
+    // first free one. Must match `port_count`; 1 means only `port`.
+    portCount: 10,
+    // While Neovim does not follow this file, how often to look again.
+    rescanMs: 5000,
     // Shared secret, must match the `token` option of markedit.nvim (if any).
     token: null,
     // Make the document read-only while Neovim is following it.
@@ -90,6 +98,8 @@
       settings: Object.assign({}, DEFAULTS),
       path: null,
       source: null,
+      // Port of the server `source` is connected to.
+      port: null,
       connected: false,
       following: false,
       locked: false,
@@ -97,6 +107,8 @@
       compartment: null,
       unlockTimer: null,
       reconnectTimer: null,
+      rescanTimer: null,
+      scanId: 0,
       reconcileTimers: [],
       backoff: 0,
       stopped: false,
@@ -108,12 +120,22 @@
       state.settings = Object.assign({}, DEFAULTS, user);
     }
 
-    function baseUrl() {
-      return 'http://' + state.settings.host + ':' + state.settings.port;
+    function baseUrl(port) {
+      return 'http://' + state.settings.host + ':' + port;
     }
 
-    function eventsUrl() {
-      let url = baseUrl() + '/events?v=' + PROTOCOL + '&path=' + encodeURIComponent(state.path);
+    function portRange() {
+      const first = Number(state.settings.port);
+      const count = Math.max(1, Number(state.settings.portCount) || 1);
+      const ports = [first];
+      for (let port = first + 1; port < first + count && port <= 65535; port += 1) {
+        ports.push(port);
+      }
+      return ports;
+    }
+
+    function endpointUrl(port, endpoint) {
+      let url = baseUrl(port) + endpoint + '?v=' + PROTOCOL + '&path=' + encodeURIComponent(state.path);
       if (state.settings.token) {
         url += '&token=' + encodeURIComponent(state.settings.token);
       }
@@ -121,20 +143,24 @@
     }
 
     // Diagnostics for :MarkEditLog. A text/plain body keeps this a "simple"
-    // request, so the browser does not need a CORS preflight.
+    // request, so the browser does not need a CORS preflight. Until a server is
+    // chosen every possible one is told, whichever the user is looking at.
     function report(type, extra) {
       if (!fetchImpl) {
         return;
       }
-      try {
-        const body = JSON.stringify(Object.assign({ type: type, path: state.path }, extra || {}));
-        const result = fetchImpl(baseUrl() + '/client', { method: 'POST', body: body, headers: { 'Content-Type': 'text/plain' } });
-        if (result && typeof result.catch === 'function') {
-          result.catch(function () {});
+      const body = JSON.stringify(Object.assign({ type: type, path: state.path }, extra || {}));
+      const ports = state.port === null ? portRange() : [state.port];
+      ports.forEach(function (port) {
+        try {
+          const result = fetchImpl(baseUrl(port) + '/client', { method: 'POST', body: body, headers: { 'Content-Type': 'text/plain' } });
+          if (result && typeof result.catch === 'function') {
+            result.catch(function () {});
+          }
+        } catch (error) {
+          // The server may simply not be there, nothing to report to.
         }
-      } catch (error) {
-        // The server may simply not be there, nothing to report to.
-      }
+      });
     }
 
     function debug(message, extra) {
@@ -191,6 +217,7 @@
         state.unlockTimer = null;
         state.following = false;
         unlock();
+        scheduleRescan();
       }, state.settings.unlockAfterMs);
     }
 
@@ -325,9 +352,11 @@
         }
         state.connected = true;
         state.backoff = 0;
-        cancelUnlockTimer();
+        // `hello` does not cancel a pending unlock, only `follow` does: this may
+        // be another Neovim, one that does not follow the file.
         report('ready', {
           server: data.version,
+          port: state.port,
           lines: MarkEdit.editorAPI.getLineCount(),
           locked: state.locked,
           origin: typeof location !== 'undefined' ? location.origin : undefined,
@@ -338,6 +367,7 @@
       follow: function () {
         state.following = true;
         cancelUnlockTimer();
+        cancelRescan();
         lock();
       },
 
@@ -354,6 +384,8 @@
         state.following = false;
         cancelUnlockTimer();
         unlock();
+        // Another Neovim may be following it too.
+        scheduleRescan();
         if (state.settings.closeOnDetach) {
           MarkEdit.closeDocument();
         }
@@ -368,7 +400,93 @@
 
     // ----- connection ---------------------------------------------------------
 
+    // Asks one server whether it follows the file. Resolves to null when there
+    // is no markedit.nvim there (or it does not answer in time).
+    function probePort(port) {
+      return new Promise(function (resolve) {
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const timer = setTimer(function () {
+          if (controller) {
+            controller.abort();
+          }
+          resolve(null);
+        }, PROBE_TIMEOUT_MS);
+        const done = function (result) {
+          clearTimer(timer);
+          resolve(result);
+        };
+        Promise.resolve()
+          .then(function () {
+            return fetchImpl(endpointUrl(port, '/tracks'), controller ? { signal: controller.signal } : {});
+          })
+          .then(function (response) {
+            return response.ok ? response.json() : null;
+          })
+          .then(function (data) {
+            done(data && data.server === SERVER_NAME ? { port: port, tracked: data.tracked === true } : null);
+          })
+          .catch(function () {
+            done(null);
+          });
+      });
+    }
+
+    // Picks the server to connect to: the one that follows the file, else the one
+    // already in use, else any that is running. If none answers, the first port is
+    // still tried, so a failed search is never worse than not searching.
+    async function findPort() {
+      const ports = portRange();
+      if (!fetchImpl || ports.length === 1) {
+        return ports[0];
+      }
+      const servers = (await Promise.all(ports.map(probePort))).filter(Boolean);
+      const tracking = servers.find(function (server) {
+        return server.tracked;
+      });
+      if (tracking) {
+        return tracking.port;
+      }
+      if (state.source) {
+        return state.port;
+      }
+      return servers.length > 0 ? servers[0].port : ports[0];
+    }
+
+    function cancelRescan() {
+      if (state.rescanTimer !== null) {
+        clearTimer(state.rescanTimer);
+        state.rescanTimer = null;
+      }
+    }
+
+    // Connected to a Neovim that does not follow this file: another one may start
+    // following it later.
+    function scheduleRescan() {
+      if (state.stopped || state.following || !state.source || state.rescanTimer !== null || portRange().length === 1) {
+        return;
+      }
+      state.rescanTimer = setTimer(function () {
+        state.rescanTimer = null;
+        connect();
+      }, state.settings.rescanMs);
+    }
+
+    // Looks for Neovim right now instead of waiting for the next attempt.
+    function wake() {
+      if (state.stopped || state.following || !state.path) {
+        return;
+      }
+      cancelRescan();
+      if (state.reconnectTimer !== null) {
+        clearTimer(state.reconnectTimer);
+        state.reconnectTimer = null;
+      }
+      state.backoff = 0;
+      connect();
+    }
+
     function disconnect() {
+      cancelRescan();
       if (state.reconnectTimer !== null) {
         clearTimer(state.reconnectTimer);
         state.reconnectTimer = null;
@@ -392,12 +510,32 @@
       }, state.backoff);
     }
 
-    function connect() {
+    async function connect() {
       if (state.stopped || !state.path) {
         return;
       }
-      const source = new EventSourceImpl(eventsUrl());
+      state.scanId += 1;
+      const scanId = state.scanId;
+      const port = await findPort();
+      // Things may have changed during the search.
+      if (state.stopped || scanId !== state.scanId || (state.source && state.following)) {
+        return;
+      }
+      if (state.source && state.port === port) {
+        scheduleRescan();
+        return;
+      }
+      openSource(port);
+    }
+
+    function openSource(port) {
+      disconnect();
+      // The new server says so again with `follow` if it follows the file.
+      state.following = false;
+      const source = new EventSourceImpl(endpointUrl(port, '/events'));
       state.source = source;
+      state.port = port;
+      scheduleRescan();
 
       Object.keys(handlers).forEach(function (name) {
         source.addEventListener(name, guarded(name, handlers[name]));
@@ -406,11 +544,14 @@
       source.onerror = function () {
         // Reconnecting by hand gives us the backoff and handles the case where
         // the server refuses the connection (EventSource would give up).
-        const wasFollowing = state.connected;
-        if (state.source === source) {
-          source.close();
-          state.source = null;
+        if (state.source !== source) {
+          return;
         }
+        const wasFollowing = state.connected;
+        cancelRescan();
+        source.close();
+        state.source = null;
+        state.port = null;
         state.connected = false;
         if (wasFollowing || state.locked) {
           armUnlockTimer();
@@ -448,7 +589,7 @@
         return false;
       }
       state.path = info.filePath;
-      connect();
+      await connect();
       return true;
     }
 
@@ -463,6 +604,7 @@
     function status() {
       return {
         path: state.path,
+        port: state.port,
         connected: state.connected,
         following: state.following,
         locked: state.locked,
@@ -472,7 +614,7 @@
       };
     }
 
-    return { start: start, stop: stop, status: status, report: report, fail: fail, _state: state };
+    return { start: start, stop: stop, wake: wake, status: status, report: report, fail: fail, _state: state };
   }
 
   const api = { createBridge: createBridge, diffRange: diffRange, DEFAULTS: DEFAULTS, PROTOCOL: PROTOCOL };
@@ -508,6 +650,11 @@
     hasModule: typeof module !== 'undefined',
     hasRequire: typeof require === 'function',
   });
+
+  // `:MarkEditOpen` brings the window to the front: look for that Neovim at once.
+  if (typeof root.addEventListener === 'function') {
+    root.addEventListener('focus', bridge.wake);
+  }
 
   let started = false;
   const begin = function () {
