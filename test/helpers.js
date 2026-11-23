@@ -180,14 +180,34 @@ function makeMarkEdit(options = {}) {
   return { MarkEdit, editor };
 }
 
-/** Records the requests made through the injected `fetch`. */
-function makeFetch() {
+/**
+ * Records the diagnostics sent through the injected `fetch` and answers the
+ * discovery probes. `servers` maps a port to whether it tracks the file, or to
+ * 'hang' (never answers) or 'other' (not markedit.nvim); the rest are refused.
+ */
+function makeFetch(servers = {}) {
   const calls = [];
+  const probes = [];
   const fetch = async (url, init) => {
+    const target = new URL(url);
+    if (target.pathname === '/tracks') {
+      probes.push(url);
+      const server = servers[target.port];
+      if (server === undefined) {
+        throw new TypeError('connection refused');
+      }
+      if (server === 'hang') {
+        return new Promise(() => {});
+      }
+      const body = server === 'other' ? { hello: 'world' } : { server: 'markedit.nvim', protocol: 1, tracked: server };
+      return { ok: true, status: 200, json: async () => body };
+    }
     calls.push({ url, init, body: init && init.body ? JSON.parse(init.body) : undefined });
     return {};
   };
   fetch.calls = calls;
+  fetch.probes = probes;
+  fetch.servers = servers;
   return fetch;
 }
 

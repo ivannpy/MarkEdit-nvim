@@ -59,6 +59,62 @@ async function until(check, what, timeout = 5000) {
   }
 }
 
+test('two Neovims at once, each followed by its own window', { skip, timeout: 30000 }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mkedit-e2e-'));
+  const port = await freePort();
+
+  const open = async (name) => {
+    const doc = path.join(dir, `${name}.md`);
+    const portFile = path.join(dir, `${name}.port`);
+    const socket = path.join(dir, `${name}.sock`);
+    fs.writeFileSync(doc, `${name} 1\n${name} 2\n${name} 3\n`);
+    const child = spawn(
+      nvim,
+      ['--headless', '-u', 'NONE', '--listen', socket, '-c', `luafile ${path.resolve(__dirname, 'start.lua')}`],
+      {
+        env: { ...process.env, MARKEDIT_NVIM_PLUGIN: plugin, E2E_DOC: doc, E2E_PORTFILE: portFile, E2E_PORT: String(port) },
+        stdio: 'ignore',
+      }
+    );
+    t.after(() => child.kill());
+    const used = await until(() => fs.existsSync(portFile) && fs.readFileSync(portFile, 'utf8').trim(), `${name} to start`);
+
+    const { MarkEdit, editor } = makeMarkEdit({
+      path: doc,
+      text: fs.readFileSync(doc, 'utf8').replace(/\n$/, ''),
+      userSettings: { 'extension.markeditNvim': { port, unlockAfterMs: 300, rescanMs: 100 } },
+    });
+    const bridge = createBridge({ MarkEdit, EventSource: SseClient, fetch, setTimeout, clearTimeout });
+    t.after(() => bridge.stop());
+    await bridge.start();
+    const lua = (code) =>
+      execFileSync(nvim, ['--server', socket, '--remote-expr', `execute("lua ${code}")`], { encoding: 'utf8' });
+    return { used: Number(used), bridge, editor, child, lua };
+  };
+
+  const a = await open('a');
+  const b = await open('b');
+  assert.equal(a.used, port);
+  assert.notEqual(b.used, a.used, 'the second Neovim takes another port');
+
+  await until(() => a.bridge.status().locked && b.bridge.status().locked, 'both documents to lock');
+  assert.equal(a.bridge.status().port, a.used);
+  assert.equal(b.bridge.status().port, b.used);
+
+  const moves = (x) => x.editor.dispatched.filter((d) => d.selection).map((d) => d.selection.anchor);
+  b.lua("vim.api.nvim_win_set_cursor(0, {3, 1}); vim.api.nvim_exec_autocmds('CursorMoved', {})");
+  await until(() => moves(b).includes(9), 'the cursor of b to arrive');
+  assert.equal(moves(a).includes(9), false, 'a does not move');
+
+  // a is killed: its document unlocks although b is still running
+  a.child.kill('SIGKILL');
+  await until(() => !a.bridge.status().locked, 'the document of a to unlock');
+  assert.equal(b.bridge.status().locked, true);
+  await until(() => a.bridge.status().connected, 'a to wait on the Neovim that is left');
+  assert.equal(a.bridge.status().port, b.used);
+  assert.equal(a.bridge.status().locked, false);
+});
+
 test('Neovim and the extension work together', { skip, timeout: 30000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mkedit-e2e-'));
   const doc = path.join(dir, 'doc.md');
